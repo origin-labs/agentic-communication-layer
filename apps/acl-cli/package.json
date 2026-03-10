@@ -18,6 +18,7 @@
     "@acl/directory-client": "workspace:*",
     "@acl/directory-server": "workspace:*",
     "@acl/directory-mock": "workspace:*",
-    "@acl/peer-daemon": "workspace:*"
+    "@acl/peer-daemon": "workspace:*",
+    "@acl/trust": "workspace:*"
   }
 }

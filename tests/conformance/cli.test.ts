@@ -12,6 +12,8 @@ describe("ACL help UX", () => {
     expect(result.stdout).toContain("inspect");
     expect(result.stdout).toContain("send");
     expect(result.stdout).toContain("call");
+    expect(result.stdout).toContain("mail");
+    expect(result.stdout).toContain("peer");
     expect(result.stdout).toContain("registry");
     expect(result.stdout).toContain("manifest");
   });
@@ -47,6 +49,22 @@ describe("ACL help UX", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("registry claim - Claim a namespace");
     expect(result.stdout).toContain("acl registry claim <namespace>");
+  });
+
+  it("shows nested peer help", async () => {
+    const result = await runCli(["help", "peer", "serve"], {});
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("peer serve - Run a WSS peer daemon hosting one local ACP stdio agent");
+    expect(result.stdout).toContain("acl peer serve --agent-id <agentId>");
+  });
+
+  it("shows nested mail help", async () => {
+    const result = await runCli(["help", "mail", "send"], {});
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("mail send - Send a structured mailbox message over a fresh ACP session");
+    expect(result.stdout).toContain("acl mail send <target> <body> --from <agentId>");
   });
 
   it("shows nested manifest help", async () => {

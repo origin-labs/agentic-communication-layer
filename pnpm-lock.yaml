@@ -50,6 +50,9 @@ importers:
       '@acl/peer-daemon':
         specifier: workspace:*
         version: link:../../packages/peer-daemon
+      '@acl/trust':
+        specifier: workspace:*
+        version: link:../../packages/trust
 
   packages/acl-types: {}
 

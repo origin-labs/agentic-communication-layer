@@ -2,6 +2,7 @@
   "name": "agentic-communication-layer",
   "private": true,
   "version": "0.1.0",
+  "license": "MIT",
   "packageManager": "pnpm@10.30.3",
   "scripts": {
     "acl": "node ./apps/acl-cli/dist/index.js",

@@ -6,6 +6,11 @@ coverage/
 tmp/
 .dev/
 .env
+.env.*
+!.env.example
 .pnpm-store/
-/docs/
+*.tsbuildinfo
+*.pem
+*.srl
 /acl
+/.acl/

@@ -3,6 +3,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
+import { fileURLToPath } from "node:url";
 import readline from "node:readline";
 import {
   CliError,
@@ -18,12 +19,18 @@ import { createHttpDirectoryClient } from "@acl/directory-client";
 import { startDirectoryServer } from "@acl/directory-server";
 import { MockDirectoryClient } from "@acl/directory-mock";
 import { PeerDaemon, type PeerSession } from "@acl/peer-daemon";
+import { derivePeerIdFromCertificatePem } from "@acl/trust";
 
 let activeJsonl = false;
 
 const HANDLE_PATTERN = /^[a-z0-9-]+(\.[a-z0-9-]+)*\.agent$/;
+const EXAMPLE_ECHO_AGENT_PATH = fileURLToPath(new URL("../../../examples/echo-acp-agent.mjs", import.meta.url));
+const EXAMPLE_MAILBOX_AGENT_PATH = fileURLToPath(new URL("../../../examples/mailbox-acp-agent.mjs", import.meta.url));
+const EXAMPLE_CLAUDE_AGENT_PATH = fileURLToPath(new URL("../../../examples/claude-acp-agent.mjs", import.meta.url));
 
-type CommandName = "resolve" | "inspect" | "send" | "call" | "registry" | "manifest";
+type CommandName = "resolve" | "inspect" | "send" | "call" | "mail" | "peer" | "registry" | "manifest";
+type MailSubcommandName = "send";
+type PeerSubcommandName = "serve";
 type RegistrySubcommandName = "serve" | "claim" | "verify" | "namespace" | "publish" | "show" | "search";
 type ManifestSubcommandName = "init";
 
@@ -83,6 +90,26 @@ const COMMAND_HELP: Record<CommandName, CommandHelpSpec> = {
     flags: ["--jsonl            Stream normalized lifecycle and prompt events as JSON Lines"],
     notes: ["Local controls: /exit closes the command, /cancel cancels the active prompt."]
   },
+  mail: {
+    name: "mail",
+    summary: "Send structured mailbox messages with sender and reply metadata",
+    usage: ["acl mail <subcommand>", "acl help mail", "acl help mail <subcommand>"],
+    examples: [
+      "acl mail send acme.mailbox.agent \"hello\" --from codex.mailbox.agent --reply-to codex.mailbox.agent",
+      "printf '%s' 'hello' | acl mail send acme.mailbox.agent - --from codex.mailbox.agent"
+    ],
+    flags: []
+  },
+  peer: {
+    name: "peer",
+    summary: "Run a local WSS peer daemon that hosts an ACP stdio agent",
+    usage: ["acl peer <subcommand>", "acl help peer", "acl help peer <subcommand>"],
+    examples: [
+      "acl peer serve --agent-id acme.reviewer.agent --example echo --cert ./.acl/tls/server.cert.pem --key ./.acl/tls/server.key.pem",
+      "acl peer serve --agent-id acme.reviewer.agent --command node --arg ./examples/echo-acp-agent.mjs --cert ./.acl/tls/server.cert.pem --key ./.acl/tls/server.key.pem"
+    ],
+    flags: []
+  },
   registry: {
     name: "registry",
     summary: "Manage the directory service and registry records",
@@ -104,6 +131,64 @@ const COMMAND_HELP: Record<CommandName, CommandHelpSpec> = {
       "acl manifest init acme.reviewer.agent --capability code.review --out ./agent.json"
     ],
     flags: []
+  }
+};
+
+const MAIL_HELP: Record<MailSubcommandName, CommandHelpSpec> = {
+  send: {
+    name: "mail send",
+    summary: "Send a structured mailbox message over a fresh ACP session",
+    usage: [
+      "acl mail send <target> <body> --from <agentId>",
+      "acl mail send <target> - --from <agentId> --reply-to <agentId> --subject <text>"
+    ],
+    examples: [
+      "acl mail send acme.mailbox.agent \"hello\" --from codex.mailbox.agent --reply-to codex.mailbox.agent",
+      "printf '%s' 'investigate acp alerts' | acl mail send acme.mailbox.agent - --from claude.code.agent --reply-to claude.code.agent --subject \"ACP alerting\" --json"
+    ],
+    flags: [
+      "--from <agentId>     Sender agentId to attach to the mail envelope",
+      "--reply-to <target>  Reply route or agentId for responses, defaults to --from",
+      "--subject <text>     Optional subject line",
+      "--json               Print the final send result as JSON",
+      "--jsonl              Stream normalized lifecycle events as JSON Lines"
+    ],
+    notes: [
+      "mail send encodes the envelope as an ACP resource block and the body as a text block.",
+      "The target agent must advertise embeddedContext support to receive structured mail."
+    ]
+  }
+};
+
+const PEER_HELP: Record<PeerSubcommandName, CommandHelpSpec> = {
+  serve: {
+    name: "peer serve",
+    summary: "Run a WSS peer daemon hosting one local ACP stdio agent",
+    usage: [
+      "acl peer serve --agent-id <agentId> --example echo --cert <path> --key <path>",
+      "acl peer serve --agent-id <agentId> --command <path> --arg <value> --cert <path> --key <path>"
+    ],
+    examples: [
+      "acl peer serve --agent-id acme.reviewer.agent --example echo --cert ./.acl/tls/server.cert.pem --key ./.acl/tls/server.key.pem",
+      "acl peer serve --agent-id acme.reviewer.agent --host 127.0.0.1 --port 7443 --command node --arg ./examples/echo-acp-agent.mjs --cert ./.acl/tls/server.cert.pem --key ./.acl/tls/server.key.pem",
+      "acl peer serve --agent-id acme.reviewer.agent --command /usr/local/bin/my-agent --arg acp --service-root /srv/my-agent --cert ./.acl/tls/server.cert.pem --key ./.acl/tls/server.key.pem"
+    ],
+    flags: [
+      "--agent-id <id>      Hosted agentId ending in .agent",
+      "--example <name>     Bundled example agent: echo, mailbox, or claude",
+      "--command <path>     Executable path for a stdio ACP agent",
+      "--arg <value>        Argument for --command, repeatable",
+      "--env <KEY=VALUE>    Environment variable for --command, repeatable",
+      "--service-root <dir> Local service root, default current directory",
+      "--host <host>        Bind host, default 127.0.0.1",
+      "--port <port>        Bind port, default 7443, 0 allowed",
+      "--cert <path>        TLS certificate path",
+      "--key <path>         TLS private key path"
+    ],
+    notes: [
+      "Exactly one agentId is hosted per peer serve process in MVP.",
+      "Use 'pnpm dev:tls ./.acl/tls' to generate a local CA and server certificate for testing."
+    ]
   }
 };
 
@@ -209,12 +294,22 @@ const MANIFEST_HELP: Record<ManifestSubcommandName, CommandHelpSpec> = {
   }
 };
 
-const COMMAND_ORDER: CommandName[] = ["resolve", "inspect", "send", "call", "registry", "manifest"];
+const COMMAND_ORDER: CommandName[] = ["resolve", "inspect", "send", "call", "mail", "peer", "registry", "manifest"];
+const MAIL_ORDER: MailSubcommandName[] = ["send"];
+const PEER_ORDER: PeerSubcommandName[] = ["serve"];
 const REGISTRY_ORDER: RegistrySubcommandName[] = ["serve", "claim", "verify", "namespace", "publish", "show", "search"];
 const MANIFEST_ORDER: ManifestSubcommandName[] = ["init"];
 
 function isCommandName(value: string | undefined): value is CommandName {
   return value !== undefined && value in COMMAND_HELP;
+}
+
+function isMailSubcommandName(value: string | undefined): value is MailSubcommandName {
+  return value !== undefined && value in MAIL_HELP;
+}
+
+function isPeerSubcommandName(value: string | undefined): value is PeerSubcommandName {
+  return value !== undefined && value in PEER_HELP;
 }
 
 function isRegistrySubcommandName(value: string | undefined): value is RegistrySubcommandName {
@@ -253,6 +348,8 @@ function formatRootHelp(): string {
     "  acl inspect acme.reviewer.agent",
     "  acl send acme.reviewer.agent \"review this design\"",
     "  acl call acme.reviewer.agent",
+    "  acl mail send acme.mailbox.agent \"hello\" --from codex.mailbox.agent",
+    "  acl peer serve --agent-id acme.reviewer.agent --example echo --cert ./.acl/tls/server.cert.pem --key ./.acl/tls/server.key.pem",
     "  acl registry serve",
     "  acl registry claim acme",
     "  acl manifest init acme.reviewer.agent"
@@ -287,6 +384,50 @@ function formatCommandHelp(spec: CommandHelpSpec): string {
     }
   }
 
+  return lines.join("\n");
+}
+
+function formatMailRootHelp(): string {
+  const lines = [
+    "mail - Send structured mailbox messages with sender and reply metadata",
+    "",
+    "Usage:",
+    "  acl mail <subcommand>",
+    "",
+    "Available Subcommands:"
+  ];
+
+  for (const name of MAIL_ORDER) {
+    lines.push(`  ${name.padEnd(10)} ${MAIL_HELP[name].summary}`);
+  }
+
+  lines.push(
+    "",
+    "Examples:",
+    "  acl mail send acme.mailbox.agent \"hello\" --from codex.mailbox.agent --reply-to codex.mailbox.agent"
+  );
+  return lines.join("\n");
+}
+
+function formatPeerRootHelp(): string {
+  const lines = [
+    "peer - Run a local WSS peer daemon that hosts an ACP stdio agent",
+    "",
+    "Usage:",
+    "  acl peer <subcommand>",
+    "",
+    "Available Subcommands:"
+  ];
+
+  for (const name of PEER_ORDER) {
+    lines.push(`  ${name.padEnd(10)} ${PEER_HELP[name].summary}`);
+  }
+
+  lines.push(
+    "",
+    "Examples:",
+    "  acl peer serve --agent-id acme.reviewer.agent --example echo --cert ./.acl/tls/server.cert.pem --key ./.acl/tls/server.key.pem"
+  );
   return lines.join("\n");
 }
 
@@ -380,6 +521,23 @@ function extractRepeatedStringOption(args: string[], flagName: string): { args: 
   return { args: nextArgs, values };
 }
 
+function parseEnvAssignments(assignments: string[]): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const assignment of assignments) {
+    const separator = assignment.indexOf("=");
+    if (separator <= 0) {
+      throw new CliError(`Invalid --env value: ${assignment}. Expected KEY=VALUE`, 1);
+    }
+    const key = assignment.slice(0, separator);
+    const value = assignment.slice(separator + 1);
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      throw new CliError(`Invalid environment variable name: ${key}`, 1);
+    }
+    env[key] = value;
+  }
+  return env;
+}
+
 function parseArgs(argv: string[]): ParsedArgs {
   const normalizedArgv = argv[0] === "--" ? argv.slice(1) : argv;
   const [command, ...rest] = normalizedArgv;
@@ -411,6 +569,26 @@ function maybeRenderHelp(parsed: ParsedArgs): string | null {
       return formatCommandHelp(REGISTRY_HELP[subtopic]);
     }
 
+    if (topic === "peer") {
+      if (!subtopic) {
+        return formatPeerRootHelp();
+      }
+      if (!isPeerSubcommandName(subtopic)) {
+        throw new CliError(`Unknown help topic: peer ${subtopic}`, 1);
+      }
+      return formatCommandHelp(PEER_HELP[subtopic]);
+    }
+
+    if (topic === "mail") {
+      if (!subtopic) {
+        return formatMailRootHelp();
+      }
+      if (!isMailSubcommandName(subtopic)) {
+        throw new CliError(`Unknown help topic: mail ${subtopic}`, 1);
+      }
+      return formatCommandHelp(MAIL_HELP[subtopic]);
+    }
+
     if (topic === "manifest") {
       if (!subtopic) {
         return formatManifestRootHelp();
@@ -425,6 +603,28 @@ function maybeRenderHelp(parsed: ParsedArgs): string | null {
       throw new CliError(`Unknown help topic: ${topic}`, 1);
     }
     return formatCommandHelp(COMMAND_HELP[topic]);
+  }
+
+  if (parsed.command === "mail" && parsed.help) {
+    const subcommand = parsed.args[0];
+    if (!subcommand) {
+      return formatMailRootHelp();
+    }
+    if (!isMailSubcommandName(subcommand)) {
+      throw new CliError(`Unsupported mail command: ${subcommand}`, 1);
+    }
+    return formatCommandHelp(MAIL_HELP[subcommand]);
+  }
+
+  if (parsed.command === "peer" && parsed.help) {
+    const subcommand = parsed.args[0];
+    if (!subcommand) {
+      return formatPeerRootHelp();
+    }
+    if (!isPeerSubcommandName(subcommand)) {
+      throw new CliError(`Unsupported peer command: ${subcommand}`, 1);
+    }
+    return formatCommandHelp(PEER_HELP[subcommand]);
   }
 
   if (parsed.command === "registry" && parsed.help) {
@@ -475,6 +675,38 @@ async function readPromptArg(arg: string | undefined): Promise<string> {
 
 function buildTextPrompt(promptText: string): PromptContentBlock[] {
   return [{ type: "text", text: promptText }];
+}
+
+function buildMailPrompt(
+  body: string,
+  envelope: {
+    from: string;
+    replyTo: string;
+    subject?: string;
+  }
+): PromptContentBlock[] {
+  const envelopeDocument = {
+    schema: "acl-mail-v1",
+    from: envelope.from,
+    replyTo: envelope.replyTo,
+    subject: envelope.subject ?? null,
+    sentAt: new Date().toISOString()
+  };
+
+  return [
+    {
+      type: "resource",
+      resource: {
+        uri: "urn:acl:mail-envelope",
+        mimeType: "application/json",
+        text: JSON.stringify(envelopeDocument)
+      }
+    },
+    {
+      type: "text",
+      text: body
+    }
+  ];
 }
 
 function emitJsonlEvent(event: string, payload: unknown): void {
@@ -684,6 +916,101 @@ async function runManifestCommand(args: string[], options: { json: boolean; json
   }
 }
 
+async function runMailCommand(
+  daemon: PeerDaemon,
+  args: string[],
+  options: { json: boolean; jsonl: boolean }
+): Promise<void> {
+  const [subcommand, ...rest] = args;
+  if (!subcommand) {
+    console.log(formatMailRootHelp());
+    return;
+  }
+
+  if (!isMailSubcommandName(subcommand)) {
+    throw new CliError(`Unsupported mail command: ${subcommand}`, 1);
+  }
+
+  switch (subcommand) {
+    case "send": {
+      const fromOption = extractStringOption(rest, "--from");
+      const replyToOption = extractStringOption(fromOption.args, "--reply-to");
+      const subjectOption = extractStringOption(replyToOption.args, "--subject");
+      const [target, bodyArg, ...unexpected] = subjectOption.args;
+
+      if (unexpected.length > 0) {
+        throw new CliError(`Unexpected arguments for mail send: ${unexpected.join(" ")}`, 1);
+      }
+      if (!target) {
+        throw new CliError("Missing target. Run 'acl help mail send'.", 1);
+      }
+      if (!fromOption.value) {
+        throw new CliError("mail send requires --from <agentId>", 1);
+      }
+      if (!HANDLE_PATTERN.test(fromOption.value)) {
+        throw new CliError("mail send requires a lowercase sender agentId ending in .agent", 1, {
+          from: fromOption.value
+        });
+      }
+
+      const body = await readPromptArg(bodyArg);
+      const prompt = buildMailPrompt(body, {
+        from: fromOption.value,
+        replyTo: replyToOption.value ?? fromOption.value,
+        subject: subjectOption.value
+      });
+
+      if (options.jsonl) {
+        const resolved = await daemon.resolveTarget(target);
+        emitJsonlEvent("resolved", resolved);
+        const session = await daemon.openSessionResolved(resolved, {
+          onConnected(resolvedTarget, peerId) {
+            emitJsonlEvent("connected", {
+              target: resolvedTarget,
+              peerId
+            });
+          },
+          onInitialized(initialize) {
+            emitJsonlEvent("initialized", initialize);
+          },
+          onSessionOpened(sessionId) {
+            emitJsonlEvent("session_opened", { sessionId });
+          }
+        });
+
+        try {
+          const result = await session.prompt(prompt, {
+            onSessionUpdate(update) {
+              emitJsonlEvent("session_update", update);
+            },
+            onPermissionRequest(request) {
+              emitJsonlEvent("permission_request", request);
+            }
+          });
+          emitJsonlEvent("prompt_result", {
+            promptResult: result.promptResult,
+            aggregatedText: result.aggregatedText,
+            locallyCancelled: result.locallyCancelled
+          });
+          if (result.locallyCancelled) {
+            process.exitCode = 7;
+          }
+        } finally {
+          await session.close().catch(() => undefined);
+        }
+        return;
+      }
+
+      const result = await daemon.send(target, prompt);
+      console.log(options.json ? JSON.stringify(result, null, 2) : formatSendResult(result));
+      if (result.locallyCancelled) {
+        process.exitCode = 7;
+      }
+      return;
+    }
+  }
+}
+
 interface CallOutputOptions {
   jsonl: boolean;
 }
@@ -841,6 +1168,141 @@ async function runInteractiveCall(session: PeerSession, options: CallOutputOptio
   }
 }
 
+function resolveExampleAgent(exampleName: string): { command: string; args: string[] } {
+  if (exampleName === "echo") {
+    return {
+      command: process.execPath,
+      args: [EXAMPLE_ECHO_AGENT_PATH]
+    };
+  }
+
+  if (exampleName === "mailbox") {
+    return {
+      command: process.execPath,
+      args: [EXAMPLE_MAILBOX_AGENT_PATH]
+    };
+  }
+
+  if (exampleName === "claude") {
+    return {
+      command: process.execPath,
+      args: [EXAMPLE_CLAUDE_AGENT_PATH]
+    };
+  }
+
+  throw new CliError(`Unsupported example agent: ${exampleName}`, 1, {
+    supported: ["echo", "mailbox", "claude"]
+  });
+}
+
+async function runPeerServe(args: string[], options: { json: boolean; jsonl: boolean }): Promise<void> {
+  if (options.jsonl) {
+    throw new CliError("--jsonl is not supported for peer serve", 1);
+  }
+
+  const hostOption = extractStringOption(args, "--host");
+  const portOption = extractStringOption(hostOption.args, "--port");
+  const certOption = extractStringOption(portOption.args, "--cert");
+  const keyOption = extractStringOption(certOption.args, "--key");
+  const agentIdOption = extractStringOption(keyOption.args, "--agent-id");
+  const serviceRootOption = extractStringOption(agentIdOption.args, "--service-root");
+  const exampleOption = extractStringOption(serviceRootOption.args, "--example");
+  const commandOption = extractStringOption(exampleOption.args, "--command");
+  const argOption = extractRepeatedStringOption(commandOption.args, "--arg");
+  const envOption = extractRepeatedStringOption(argOption.args, "--env");
+
+  if (envOption.args.length > 0) {
+    throw new CliError(`Unexpected arguments for peer serve: ${envOption.args.join(" ")}`, 1);
+  }
+
+  const host = hostOption.value ?? "127.0.0.1";
+  const port = portOption.value ? Number.parseInt(portOption.value, 10) : 7443;
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new CliError("peer serve requires a valid TCP port; use 0 for an ephemeral port", 1);
+  }
+
+  const certPath = certOption.value ? resolvePath(certOption.value) : null;
+  const keyPath = keyOption.value ? resolvePath(keyOption.value) : null;
+  const agentId = agentIdOption.value;
+  const serviceRoot = resolvePath(serviceRootOption.value ?? process.cwd());
+
+  if (!certPath || !keyPath) {
+    throw new CliError("peer serve requires --cert and --key", 1);
+  }
+  if (!agentId) {
+    throw new CliError("peer serve requires --agent-id", 1);
+  }
+  if (!HANDLE_PATTERN.test(agentId)) {
+    throw new CliError("peer serve requires a lowercase agentId ending in .agent", 1, { agentId });
+  }
+
+  const hasExample = Boolean(exampleOption.value);
+  const hasCommand = Boolean(commandOption.value);
+  if (hasExample === hasCommand) {
+    throw new CliError("peer serve requires exactly one of --example or --command", 1);
+  }
+
+  const adapterEnv = envOption.values.length > 0 ? parseEnvAssignments(envOption.values) : undefined;
+  const adapter = hasExample
+    ? {
+        ...resolveExampleAgent(exampleOption.value!),
+        env: adapterEnv
+      }
+    : {
+        command: commandOption.value!,
+        args: argOption.values,
+        env: adapterEnv
+      };
+
+  const daemon = new PeerDaemon(new JsonContactsStore(process.env.ACL_CONTACTS_FILE ?? join(homedir(), ".config", "acl", "contacts.json")), new MockDirectoryClient(process.env.ACL_DIRECTORY_FIXTURE ?? join(process.cwd(), "tests", "fixtures", "directory.json")));
+  daemon.registerHostedAgent({
+    agentId,
+    serviceRoot,
+    adapter
+  });
+
+  const server = await daemon.startServer({
+    host,
+    port,
+    certPath,
+    keyPath
+  });
+
+  const certificatePem = await readFile(certPath, "utf8");
+  const peerId = derivePeerIdFromCertificatePem(certificatePem);
+  const endpoint = `wss://${server.port === 443 ? host : `${host}:${server.port}`}/agents/${agentId}`;
+  const payload = {
+    host,
+    port: server.port,
+    agentId,
+    serviceRoot,
+    endpoint,
+    peerId
+  };
+
+  if (options.json) {
+    console.log(JSON.stringify(payload, null, 2));
+  } else {
+    console.log(`Peer daemon listening at ${endpoint}`);
+    console.log(`peerId: ${peerId}`);
+    console.log(`agentId: ${agentId}`);
+    console.log(`serviceRoot: ${serviceRoot}`);
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const shutdown = () => {
+      process.off("SIGINT", shutdown);
+      process.off("SIGTERM", shutdown);
+      void daemon
+        .stopServer()
+        .then(resolve, reject);
+    };
+
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
+  });
+}
+
 async function runRegistryServe(args: string[]): Promise<void> {
   const hostOption = extractStringOption(args, "--host");
   const portOption = extractStringOption(hostOption.args, "--port");
@@ -978,6 +1440,22 @@ async function main() {
     return;
   }
 
+  if (command === "peer") {
+    const [subcommand, ...rest] = args;
+    if (!subcommand) {
+      console.log(formatPeerRootHelp());
+      return;
+    }
+    if (!isPeerSubcommandName(subcommand)) {
+      throw new CliError(`Unsupported peer command: ${subcommand}`, 1);
+    }
+    switch (subcommand) {
+      case "serve":
+        await runPeerServe(rest, { json, jsonl });
+        return;
+    }
+  }
+
   if (command === "manifest") {
     await runManifestCommand(args, { json, jsonl });
     return;
@@ -994,6 +1472,11 @@ async function main() {
       caCertPath: process.env.ACL_TLS_CA_CERT
     }
   });
+
+  if (command === "mail") {
+    await runMailCommand(daemon, args, { json, jsonl });
+    return;
+  }
 
   switch (command) {
     case "resolve": {
