@@ -4,10 +4,13 @@ import {
   buildInitializeRequest,
   buildJsonRpcError,
   enforcePromptContentBlocks,
+  enforcePromptSizeLimits,
   isJsonRpcFailure,
   isJsonRpcNotification,
   isJsonRpcRequest,
   isJsonRpcResponse,
+  MAX_UPDATE_CUMULATIVE_BYTES_PER_TURN,
+  MAX_UPDATE_FRAME_BYTES,
   parseJsonRpcMessage,
   validateInitializeResponse
 } from "@acl/acp-profile";
@@ -38,6 +41,11 @@ interface HostedAgentRegistration {
 
 interface PeerDaemonOptions {
   transport?: ConnectWssOptions;
+  initStartTimeoutMs?: number;
+  initializeResponseTimeoutMs?: number;
+  sessionNewTimeoutMs?: number;
+  promptIdleTimeoutMs?: number;
+  cancelGraceTimeoutMs?: number;
 }
 
 interface InboundBridgeState {
@@ -53,12 +61,19 @@ export interface PromptExecutionCallbacks {
   onTextChunk?(text: string): void;
   onSessionUpdate?(update: Record<string, unknown>): void;
   onPermissionRequest?(request: JsonRpcRequest): void;
+  onPromptResult?(promptResult: PromptResult): void;
 }
 
 export interface PromptExecutionResult {
   aggregatedText: string;
   promptResult: PromptResult;
   locallyCancelled: boolean;
+}
+
+export interface SessionOpenCallbacks {
+  onConnected?(target: ResolvedTarget, peerId: string): void;
+  onInitialized?(initialize: InitializeResult): void;
+  onSessionOpened?(sessionId: string): void;
 }
 
 function normalizeAgentPath(pathname: string): string | null {
@@ -68,6 +83,29 @@ function normalizeAgentPath(pathname: string): string | null {
 
 function serializeJson(message: unknown): string {
   return JSON.stringify(message);
+}
+
+function waitForTimeout<T>(promise: Promise<T>, timeoutMs: number, errorFactory: () => CliError): Promise<T> {
+  if (!Number.isFinite(timeoutMs)) {
+    return promise;
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(errorFactory());
+    }, timeoutMs);
+
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
 }
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
@@ -123,7 +161,11 @@ export class PeerSession {
     public readonly peerId: string,
     public readonly initialize: InitializeResult,
     public readonly sessionId: string,
-    private readonly transport: PeerTransport
+    private readonly transport: PeerTransport,
+    private readonly options: {
+      promptIdleTimeoutMs: number;
+      cancelGraceTimeoutMs: number;
+    }
   ) {}
 
   async prompt(prompt: PromptContentBlock[], callbacks: PromptExecutionCallbacks = {}): Promise<PromptExecutionResult> {
@@ -132,6 +174,7 @@ export class PeerSession {
     }
 
     enforcePromptContentBlocks(prompt, this.initialize.agentCapabilities);
+    enforcePromptSizeLimits(prompt);
 
     const requestId = this.nextRequestId++;
     this.activePrompt = {
@@ -152,13 +195,40 @@ export class PeerSession {
     );
 
     let aggregatedText = "";
+    let cumulativeUpdateBytes = 0;
 
     try {
       while (true) {
-        const rawMessage = await this.transport.receiveFrame();
+        const rawMessage = await waitForTimeout(
+          this.transport.receiveFrame(),
+          this.activePrompt.cancelRequested ? this.options.cancelGraceTimeoutMs : this.options.promptIdleTimeoutMs,
+          () =>
+            new CliError(
+              this.activePrompt?.cancelRequested
+                ? "Timed out waiting for prompt completion after cancellation"
+                : "Prompt turn idle timeout exceeded",
+              8
+            )
+        ).catch(async (error) => {
+          if (!this.activePrompt?.cancelRequested) {
+            await this.cancel();
+            return await waitForTimeout(
+              this.transport.receiveFrame(),
+              this.options.cancelGraceTimeoutMs,
+              () => new CliError("Timed out waiting for prompt completion after cancellation", 8)
+            );
+          }
+          throw error;
+        });
         const message = parseJsonRpcMessage(rawMessage, 8, "prompt turn");
 
         if (isJsonRpcNotification(message) && message.method === "session/update") {
+          const frameBytes = Buffer.byteLength(rawMessage, "utf8");
+          cumulativeUpdateBytes += frameBytes;
+          if (frameBytes > MAX_UPDATE_FRAME_BYTES || cumulativeUpdateBytes > MAX_UPDATE_CUMULATIVE_BYTES_PER_TURN) {
+            await this.cancel();
+          }
+
           const updateEnvelope = isObjectRecord(message.params) ? message.params : null;
           const update = updateEnvelope && isObjectRecord(updateEnvelope.update) ? updateEnvelope.update : null;
           const content = update && isObjectRecord(update.content) ? update.content : null;
@@ -194,6 +264,7 @@ export class PeerSession {
           throw new CliError(message.error.message, 8, message.error);
         }
 
+        callbacks.onPromptResult?.(message.result);
         return {
           aggregatedText,
           promptResult: message.result,
@@ -360,7 +431,11 @@ export class PeerDaemon {
 
   async openSession(target: string): Promise<PeerSession> {
     const resolved = await this.resolveTarget(target);
-    const { transport, initialize, peerId } = await this.openInitializedTransport(resolved);
+    return await this.openSessionResolved(resolved);
+  }
+
+  async openSessionResolved(resolved: ResolvedTarget, callbacks: SessionOpenCallbacks = {}): Promise<PeerSession> {
+    const { transport, initialize, peerId } = await this.openInitializedTransport(resolved, callbacks);
 
     try {
       await transport.sendFrame(
@@ -372,7 +447,11 @@ export class PeerDaemon {
         })
       );
 
-      const sessionFrame = await transport.receiveFrame();
+      const sessionFrame = await waitForTimeout(
+        transport.receiveFrame(),
+        this.options.sessionNewTimeoutMs ?? 10_000,
+        () => new CliError("Timed out waiting for session/new response", 6)
+      );
       const sessionMessage = parseJsonRpcMessage(sessionFrame, 6, "session/new response");
       if (!isJsonRpcResponse<{ sessionId: string }>(sessionMessage)) {
         throw new CliError("Expected JSON-RPC response to session/new", 6, sessionMessage);
@@ -381,7 +460,11 @@ export class PeerDaemon {
         throw new CliError(sessionMessage.error.message, 6, sessionMessage.error);
       }
 
-      return new PeerSession(resolved, peerId, initialize, sessionMessage.result.sessionId, transport);
+      callbacks.onSessionOpened?.(sessionMessage.result.sessionId);
+      return new PeerSession(resolved, peerId, initialize, sessionMessage.result.sessionId, transport, {
+        promptIdleTimeoutMs: this.options.promptIdleTimeoutMs ?? 120_000,
+        cancelGraceTimeoutMs: this.options.cancelGraceTimeoutMs ?? 10_000
+      });
     } catch (error) {
       await transport.close().catch(() => undefined);
       throw error;
@@ -407,7 +490,8 @@ export class PeerDaemon {
   }
 
   private async openInitializedTransport(
-    resolved: ResolvedTarget
+    resolved: ResolvedTarget,
+    callbacks: Pick<SessionOpenCallbacks, "onConnected" | "onInitialized"> = {}
   ): Promise<{ transport: PeerTransport; peerId: string; initialize: InitializeResult }> {
     const transport = await connectWss(resolved.endpoint.url, this.options.transport);
     const trust = evaluateTrust(resolved.contact, transport.peerId);
@@ -419,8 +503,14 @@ export class PeerDaemon {
       });
     }
 
+    callbacks.onConnected?.(resolved, transport.peerId);
+
     await transport.sendFrame(serializeJson(buildInitializeRequest(1)));
-    const frame = await transport.receiveFrame();
+    const frame = await waitForTimeout(
+      transport.receiveFrame(),
+      this.options.initializeResponseTimeoutMs ?? 10_000,
+      () => new CliError("Timed out waiting for initialize response", 4)
+    );
     const message = parseJsonRpcMessage(frame, 4, "initialize response");
     if (!isJsonRpcResponse<InitializeResult>(message)) {
       await transport.close().catch(() => undefined);
@@ -431,10 +521,13 @@ export class PeerDaemon {
       throw new CliError(message.error.message, 4, message.error);
     }
 
+    const initialize = validateInitializeResponse(message.result);
+    callbacks.onInitialized?.(initialize);
+
     return {
       transport,
       peerId: transport.peerId,
-      initialize: validateInitializeResponse(message.result)
+      initialize
     };
   }
 
@@ -461,7 +554,11 @@ export class PeerDaemon {
 
     const clientToAdapter = async () => {
       while (true) {
-        const rawMessage = await transport.receiveFrame();
+        const rawMessage = await waitForTimeout(
+          transport.receiveFrame(),
+          state.initializeRequestId === null ? this.options.initStartTimeoutMs ?? 5_000 : Number.POSITIVE_INFINITY,
+          () => new CliError("Timed out waiting for initial ACP initialize message", 4)
+        );
         const message = parseJsonRpcMessage(rawMessage, 4, "inbound WSS frame");
 
         if (state.initializeRequestId === null) {
@@ -521,6 +618,7 @@ export class PeerDaemon {
 
             try {
               enforcePromptContentBlocks(params.prompt as PromptContentBlock[], state.initializeResult?.agentCapabilities);
+              enforcePromptSizeLimits(params.prompt as PromptContentBlock[]);
             } catch (error) {
               const cliError = error instanceof CliError ? error : new CliError("Invalid prompt content", 9, error);
               await transport.sendFrame(

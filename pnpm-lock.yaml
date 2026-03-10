@@ -23,6 +23,9 @@ importers:
       vitest:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@24.12.0)(tsx@4.21.0)
+      ws:
+        specifier: ^8.19.0
+        version: 8.19.0
 
   apps/acl-cli:
     dependencies:

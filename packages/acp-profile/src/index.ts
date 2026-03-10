@@ -14,6 +14,14 @@ import {
   type PromptContentBlock
 } from "@acl/acl-types";
 
+export const MAX_PROMPT_TOTAL_BYTES = 524_288;
+export const MAX_TEXT_BLOCK_BYTES = 262_144;
+export const MAX_RESOURCE_TEXT_BYTES = 262_144;
+export const MAX_RESOURCE_LINK_URI_BYTES = 4_096;
+export const MAX_PROMPT_BLOCKS = 32;
+export const MAX_UPDATE_FRAME_BYTES = 262_144;
+export const MAX_UPDATE_CUMULATIVE_BYTES_PER_TURN = 8_388_608;
+
 export function buildInitializeRequest(id: string | number = 1): InitializeRequest {
   return {
     jsonrpc: "2.0",
@@ -61,6 +69,68 @@ export function enforcePromptContentBlocks(
     }
     throw new CliError("Unsupported prompt content block type", 9, block);
   }
+}
+
+export function enforcePromptSizeLimits(prompt: PromptContentBlock[]): void {
+  if (prompt.length > MAX_PROMPT_BLOCKS) {
+    throw new CliError("Prompt exceeds maximum block count", 9, {
+      maxBlocks: MAX_PROMPT_BLOCKS,
+      actualBlocks: prompt.length
+    });
+  }
+
+  let totalBytes = 0;
+
+  for (const block of prompt) {
+    if (block.type === "text") {
+      const blockBytes = Buffer.byteLength(block.text, "utf8");
+      if (blockBytes > MAX_TEXT_BLOCK_BYTES) {
+        throw new CliError("Text prompt block exceeds maximum size", 9, {
+          maxBytes: MAX_TEXT_BLOCK_BYTES,
+          actualBytes: blockBytes
+        });
+      }
+      totalBytes += blockBytes;
+      continue;
+    }
+
+    if (block.type === "resource_link") {
+      const uriBytes = Buffer.byteLength(block.uri, "utf8");
+      if (uriBytes > MAX_RESOURCE_LINK_URI_BYTES) {
+        throw new CliError("Resource link URI exceeds maximum size", 9, {
+          maxBytes: MAX_RESOURCE_LINK_URI_BYTES,
+          actualBytes: uriBytes
+        });
+      }
+      totalBytes += uriBytes;
+      totalBytes += Buffer.byteLength(block.name, "utf8");
+      continue;
+    }
+
+    if (block.type === "resource") {
+      const textBytes = Buffer.byteLength(block.resource.text, "utf8");
+      if (textBytes > MAX_RESOURCE_TEXT_BYTES) {
+        throw new CliError("Embedded resource text exceeds maximum size", 9, {
+          maxBytes: MAX_RESOURCE_TEXT_BYTES,
+          actualBytes: textBytes
+        });
+      }
+      totalBytes += textBytes;
+      totalBytes += Buffer.byteLength(block.resource.uri, "utf8");
+      continue;
+    }
+  }
+
+  if (totalBytes > MAX_PROMPT_TOTAL_BYTES) {
+    throw new CliError("Prompt exceeds maximum total size", 9, {
+      maxBytes: MAX_PROMPT_TOTAL_BYTES,
+      actualBytes: totalBytes
+    });
+  }
+}
+
+export function getUtf8ByteLength(value: string): number {
+  return Buffer.byteLength(value, "utf8");
 }
 
 export function buildFreshSessionParams(): { cwd: "/"; mcpServers: [] } {

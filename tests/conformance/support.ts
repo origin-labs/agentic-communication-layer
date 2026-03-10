@@ -1,12 +1,14 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { type ContactRecord, type Visibility } from "../../packages/acl-types/src/index.js";
 import { MockDirectoryClient } from "../../packages/directory-mock/src/index.js";
 import { JsonContactsStore } from "../../packages/contacts-store/src/index.js";
 import { PeerDaemon } from "../../packages/peer-daemon/src/index.js";
+import { derivePeerIdFromCertificatePem } from "../../packages/trust/src/index.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -15,6 +17,11 @@ const generateDevCaScript = fileURLToPath(new URL("../../scripts/generate-dev-ca
 
 export interface TestHarness {
   env: Record<string, string>;
+  contactsPath: string;
+  directoryPath: string;
+  serverPeerId: string;
+  createClientDaemon(): PeerDaemon;
+  writeContacts(contacts: ContactRecord[]): Promise<void>;
   cleanup(): Promise<void>;
 }
 
@@ -24,7 +31,11 @@ export interface CliRunResult {
   exitCode: number | null;
 }
 
-export async function createHarness(): Promise<TestHarness> {
+export interface HarnessOptions {
+  visibility?: Visibility;
+}
+
+export async function createHarness(options: HarnessOptions = {}): Promise<TestHarness> {
   const tempDir = await mkdtemp(join(tmpdir(), "acl-mvp-"));
   const tlsDir = join(tempDir, "tls");
   const contactsPath = join(tempDir, "contacts.json");
@@ -36,6 +47,7 @@ export async function createHarness(): Promise<TestHarness> {
 
   await writeFile(contactsPath, `${JSON.stringify({ version: 1, contacts: [] }, null, 2)}\n`, "utf8");
   await writeFile(directoryPath, `${JSON.stringify({ version: 1, agents: [] }, null, 2)}\n`, "utf8");
+  const serverPeerId = derivePeerIdFromCertificatePem(await readFile(join(tlsDir, "server.cert.pem"), "utf8"));
 
   const daemon = new PeerDaemon(new JsonContactsStore(contactsPath), new MockDirectoryClient(directoryPath));
   daemon.registerHostedAgent({
@@ -74,7 +86,7 @@ export async function createHarness(): Promise<TestHarness> {
               }
             ],
             serviceCapabilities: ["code.review"],
-            visibility: "public",
+            visibility: options.visibility ?? "public",
             version: "0.1.0",
             updatedAt: new Date().toISOString()
           }
@@ -91,6 +103,23 @@ export async function createHarness(): Promise<TestHarness> {
       ACL_CONTACTS_FILE: contactsPath,
       ACL_DIRECTORY_FIXTURE: directoryPath,
       ACL_TLS_CA_CERT: join(tlsDir, "ca.cert.pem")
+    },
+    contactsPath,
+    directoryPath,
+    serverPeerId,
+    createClientDaemon() {
+      return new PeerDaemon(
+        new JsonContactsStore(contactsPath),
+        new MockDirectoryClient(directoryPath),
+        {
+          transport: {
+            caCertPath: join(tlsDir, "ca.cert.pem")
+          }
+        }
+      );
+    },
+    async writeContacts(contacts: ContactRecord[]) {
+      await writeFile(contactsPath, `${JSON.stringify({ version: 1, contacts }, null, 2)}\n`, "utf8");
     },
     async cleanup() {
       await daemon.stopServer().catch(() => undefined);

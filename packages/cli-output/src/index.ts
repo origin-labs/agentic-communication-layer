@@ -10,7 +10,12 @@ export function formatInspectResult(result: InspectResult): string {
     `endpoint: ${result.target.endpoint.url}`,
     `peerId: ${result.peerId}`,
     `protocolVersion: ${result.initialize.protocolVersion}`,
-    `agentInfo.name: ${result.initialize.agentInfo?.name ?? ""}`
+    `agentInfo.name: ${result.initialize.agentInfo?.name ?? ""}`,
+    `loadSession: ${String(result.initialize.agentCapabilities?.loadSession ?? false)}`,
+    `promptCapabilities.embeddedContext: ${String(
+      result.initialize.agentCapabilities?.promptCapabilities?.embeddedContext ?? false
+    )}`,
+    `authMethods: ${result.initialize.authMethods?.length ?? 0}`
   ].join("\n");
 }
 

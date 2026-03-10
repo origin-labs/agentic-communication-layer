@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import readline from "node:readline";
@@ -10,11 +9,14 @@ import { JsonContactsStore } from "@acl/contacts-store";
 import { MockDirectoryClient } from "@acl/directory-mock";
 import { PeerDaemon, type PeerSession } from "@acl/peer-daemon";
 
+let activeJsonl = false;
+
 function parseArgs(argv: string[]) {
   const [command, ...rest] = argv;
   const json = rest.includes("--json");
-  const cleanArgs = rest.filter((arg) => arg !== "--json");
-  return { command, args: cleanArgs, json };
+  const jsonl = rest.includes("--jsonl");
+  const cleanArgs = rest.filter((arg) => arg !== "--json" && arg !== "--jsonl");
+  return { command, args: cleanArgs, json, jsonl };
 }
 
 async function readPromptArg(arg: string | undefined): Promise<string> {
@@ -35,10 +37,18 @@ function buildTextPrompt(promptText: string): PromptContentBlock[] {
   return [{ type: "text", text: promptText }];
 }
 
-async function runInteractiveCall(session: PeerSession): Promise<void> {
+function emitJsonlEvent(event: string, payload: unknown): void {
+  process.stdout.write(`${JSON.stringify({ event, payload })}\n`);
+}
+
+interface CallOutputOptions {
+  jsonl: boolean;
+}
+
+async function runInteractiveCall(session: PeerSession, options: CallOutputOptions): Promise<void> {
   const rl = readline.createInterface({
     input: process.stdin,
-    output: process.stdout,
+    output: options.jsonl ? undefined : process.stdout,
     terminal: process.stdin.isTTY
   });
 
@@ -85,11 +95,34 @@ async function runInteractiveCall(session: PeerSession): Promise<void> {
     activePrompt = session
       .prompt(buildTextPrompt(promptText), {
         onTextChunk(text) {
+          if (options.jsonl) {
+            return;
+          }
           wroteText = true;
           process.stdout.write(text);
+        },
+        onSessionUpdate(update) {
+          if (options.jsonl) {
+            emitJsonlEvent("session_update", update);
+          }
+        },
+        onPermissionRequest(request) {
+          if (options.jsonl) {
+            emitJsonlEvent("permission_request", request);
+          }
         }
       })
       .then((result) => {
+        if (options.jsonl) {
+          emitJsonlEvent("prompt_result", {
+            prompt: promptText,
+            promptResult: result.promptResult,
+            aggregatedText: result.aggregatedText,
+            locallyCancelled: result.locallyCancelled
+          });
+          return;
+        }
+
         if (wroteText && !result.aggregatedText.endsWith("\n")) {
           process.stdout.write("\n");
         }
@@ -166,7 +199,11 @@ async function runInteractiveCall(session: PeerSession): Promise<void> {
 }
 
 async function main() {
-  const { command, args, json } = parseArgs(process.argv.slice(2));
+  const { command, args, json, jsonl } = parseArgs(process.argv.slice(2));
+  activeJsonl = jsonl;
+  if (json && jsonl) {
+    throw new CliError("Choose only one of --json or --jsonl", 1);
+  }
   const contactsFilePath =
     process.env.ACL_CONTACTS_FILE ?? join(homedir(), ".config", "acl", "contacts.json");
   const contacts = new JsonContactsStore(contactsFilePath);
@@ -198,6 +235,44 @@ async function main() {
       const target = args[0];
       if (!target) throw new CliError("Missing target", 1);
       const promptText = await readPromptArg(args[1]);
+      if (jsonl) {
+        const resolved = await daemon.resolveTarget(target);
+        emitJsonlEvent("resolved", resolved);
+        const session = await daemon.openSessionResolved(resolved, {
+          onConnected(resolvedTarget, peerId) {
+            emitJsonlEvent("connected", {
+              target: resolvedTarget,
+              peerId
+            });
+          },
+          onInitialized(initialize) {
+            emitJsonlEvent("initialized", initialize);
+          },
+          onSessionOpened(sessionId) {
+            emitJsonlEvent("session_opened", { sessionId });
+          }
+        });
+
+        try {
+          const result = await session.prompt(buildTextPrompt(promptText), {
+            onSessionUpdate(update) {
+              emitJsonlEvent("session_update", update);
+            },
+            onPermissionRequest(request) {
+              emitJsonlEvent("permission_request", request);
+            }
+          });
+          emitJsonlEvent("prompt_result", {
+            promptResult: result.promptResult,
+            aggregatedText: result.aggregatedText,
+            locallyCancelled: result.locallyCancelled
+          });
+        } finally {
+          await session.close().catch(() => undefined);
+        }
+        return;
+      }
+
       const result = await daemon.send(target, buildTextPrompt(promptText));
       console.log(json ? JSON.stringify(result, null, 2) : formatSendResult(result));
       return;
@@ -206,12 +281,35 @@ async function main() {
       const target = args[0];
       if (!target) throw new CliError("Missing target", 1);
       if (json) {
-        throw new CliError("--json is not supported for acl call in this slice", 1);
+        throw new CliError("--json is not supported for acl call", 1);
       }
 
-      const session = await daemon.openSession(target);
+      const resolved = await daemon.resolveTarget(target);
+      if (jsonl) {
+        emitJsonlEvent("resolved", resolved);
+      }
+      const session = await daemon.openSessionResolved(resolved, {
+        onConnected(resolvedTarget, peerId) {
+          if (jsonl) {
+            emitJsonlEvent("connected", {
+              target: resolvedTarget,
+              peerId
+            });
+          }
+        },
+        onInitialized(initialize) {
+          if (jsonl) {
+            emitJsonlEvent("initialized", initialize);
+          }
+        },
+        onSessionOpened(sessionId) {
+          if (jsonl) {
+            emitJsonlEvent("session_opened", { sessionId });
+          }
+        }
+      });
       try {
-        await runInteractiveCall(session);
+        await runInteractiveCall(session, { jsonl });
       } finally {
         await session.close().catch(() => undefined);
       }
@@ -223,6 +321,9 @@ async function main() {
 }
 
 main().catch(async (error: unknown) => {
+  if (activeJsonl) {
+    emitJsonlEvent("error", error instanceof CliError ? { message: error.message, details: error.details } : { message: error instanceof Error ? error.message : String(error) });
+  }
   if (error instanceof CliError) {
     console.error(error.message);
     if (error.details !== undefined) {

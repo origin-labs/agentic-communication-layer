@@ -212,6 +212,29 @@ async function handleMessage(line) {
   if (message.method === "session/prompt") {
     const promptText = textFromPrompt(message.params?.prompt);
 
+    if (promptText.startsWith("[invalid-stdout]")) {
+      process.stdout.write("not-json\n");
+      return;
+    }
+
+    if (promptText.startsWith("[crash]")) {
+      send({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: message.params?.sessionId ?? sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: {
+              type: "text",
+              text: "About to crash"
+            }
+          }
+        }
+      });
+      process.exit(1);
+    }
+
     if (promptText.startsWith("[hold]")) {
       startHoldPrompt(message.id, message.params?.sessionId ?? sessionId, promptText);
       return;
@@ -246,6 +269,34 @@ async function handleMessage(line) {
               optionId: "reject-once",
               name: "Reject",
               kind: "reject_once"
+            }
+          ]
+        }
+      });
+      return;
+    }
+
+    if (promptText.startsWith("[permission-cancel]")) {
+      const permissionRequestId = nextPermissionRequestId++;
+      pendingPermissionRequests.set(permissionRequestId, {
+        sessionId: activePrompt.sessionId,
+        promptRequestId: activePrompt.requestId
+      });
+
+      send({
+        jsonrpc: "2.0",
+        id: permissionRequestId,
+        method: "session/request_permission",
+        params: {
+          sessionId: activePrompt.sessionId,
+          toolCall: {
+            toolCallId: "tool_permission_cancel_fixture"
+          },
+          options: [
+            {
+              optionId: "allow-once",
+              name: "Allow once",
+              kind: "allow_once"
             }
           ]
         }
