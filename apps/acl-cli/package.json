@@ -1,0 +1,21 @@
+{
+  "name": "@acl/acl-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "acl": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@acl/acl-types": "workspace:*",
+    "@acl/cli-output": "workspace:*",
+    "@acl/contacts-store": "workspace:*",
+    "@acl/directory-mock": "workspace:*",
+    "@acl/peer-daemon": "workspace:*"
+  }
+}

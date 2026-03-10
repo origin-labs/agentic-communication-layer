@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.base.json",
+  "files": [],
+  "references": [
+    { "path": "./packages/acl-types" },
+    { "path": "./packages/acp-profile" },
+    { "path": "./packages/adapter-stdio" },
+    { "path": "./packages/cli-output" },
+    { "path": "./packages/contacts-store" },
+    { "path": "./packages/directory-client" },
+    { "path": "./packages/directory-mock" },
+    { "path": "./packages/trust" },
+    { "path": "./packages/transport-wss" },
+    { "path": "./packages/peer-daemon" },
+    { "path": "./apps/acl-cli" }
+  ]
+}

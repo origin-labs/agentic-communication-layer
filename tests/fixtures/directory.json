@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "agents": [
+    {
+      "agentId": "acme.reviewer.agent",
+      "handle": "acme.reviewer.agent",
+      "displayName": "Acme Reviewer",
+      "summary": "Architecture and code review agent",
+      "protocols": {
+        "acp": [1]
+      },
+      "endpoints": [
+        {
+          "transport": "wss",
+          "url": "wss://127.0.0.1:7443/agents/acme.reviewer.agent",
+          "priority": 0
+        }
+      ],
+      "serviceCapabilities": ["code.review"],
+      "visibility": "public",
+      "version": "0.1.0",
+      "updatedAt": "2026-03-09T00:00:00Z"
+    }
+  ]
+}
