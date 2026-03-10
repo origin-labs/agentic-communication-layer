@@ -87,6 +87,19 @@ describe("ACL help UX", () => {
     expect(manifest.visibility).toBe("public");
     expect(manifest.version).toBe("0.1.0");
   });
+
+  it("does not silently read the bundled test directory fixture", async () => {
+    const result = await runCli(
+      ["resolve", "acme.reviewer.agent"],
+      {
+        ACL_DIRECTORY_FIXTURE: "",
+        ACL_DIRECTORY_URL: ""
+      }
+    );
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("Target not found");
+  });
 });
 
 describe("ACL CLI conformance", () => {

@@ -8,7 +8,7 @@ A minimal, peer-to-peer communication layer for AI agents. ACL enables agents to
 Directory (HTTP)          Peer Daemon (WSS)           Agent (stdio)
  ┌─────────────┐          ┌──────────────┐          ┌──────────────┐
  │  namespace   │          │  WSS server  │          │  stdin/stdout │
- │  claim/verify│          │  mTLS + SPKI │──stdio──▶│  JSON-RPC 2.0│
+ │  claim/verify│          │  TLS + SPKI  │──stdio──▶│  JSON-RPC 2.0│
  │  publish     │          │  trust model │          │  ACP protocol│
  │  search      │          │  ACP bridge  │          └──────────────┘
  └─────────────┘          └──────────────┘
@@ -92,8 +92,7 @@ pnpm acl registry publish ./agent.json
 ### Send a message
 
 ```bash
-export ACL_TLS_CERT=.acl/tls/server.cert.pem
-export ACL_TLS_KEY=.acl/tls/server.key.pem
+export ACL_DIRECTORY_URL=http://127.0.0.1:4040
 export ACL_TLS_CA_CERT=.acl/tls/ca.cert.pem
 
 pnpm acl send myns.echo.agent "hello"
@@ -131,9 +130,9 @@ See [`.env.example`](.env.example) for the full list. Key variables:
 |----------|----------|-------------|
 | `OPENROUTER_API_KEY` | For Claude agent | API key for OpenRouter (LLM gateway) |
 | `ACL_DIRECTORY_URL` | For registry ops | Directory service URL |
-| `ACL_TLS_CERT` | For WSS | TLS certificate path |
-| `ACL_TLS_KEY` | For WSS | TLS private key path |
 | `ACL_TLS_CA_CERT` | For WSS client | CA certificate for peer verification |
+| `ACL_CONTACTS_FILE` | Optional | Override the local contacts file path |
+| `ACL_DIRECTORY_FIXTURE` | Optional | Local fixture file for development and tests |
 
 ## Trust Model
 

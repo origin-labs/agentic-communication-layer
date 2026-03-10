@@ -51,6 +51,7 @@ interface PeerDaemonOptions {
 interface InboundBridgeState {
   initializeRequestId: string | number | null;
   initializeResult: InitializeResult | null;
+  initializeFailed: boolean;
   sessionOpened: boolean;
   pendingSessionOpenRequestId: string | number | null;
   activePromptRequestId: string | number | null;
@@ -559,6 +560,7 @@ export class PeerDaemon {
     const state: InboundBridgeState = {
       initializeRequestId: null,
       initializeResult: null,
+      initializeFailed: false,
       sessionOpened: false,
       pendingSessionOpenRequestId: null,
       activePromptRequestId: null,
@@ -583,6 +585,24 @@ export class PeerDaemon {
 
         if (state.initializeRequestId === null) {
           assertInitializeFirst(message);
+        }
+
+        const method =
+          isJsonRpcRequest(message) || isJsonRpcNotification(message)
+            ? message.method
+            : null;
+
+        if (state.initializeFailed) {
+          throw new CliError("ACP initialize failed; closing inbound connection", 4);
+        }
+
+        if (state.initializeRequestId !== null && state.initializeResult === null && method !== "initialize") {
+          if (isJsonRpcRequest(message)) {
+            await sendJsonRpcError(transport, message.id, "initialize must complete before other ACP methods");
+            continue;
+          }
+
+          throw new CliError("Received ACP notification before initialize completed", 4, message);
         }
 
         if (isJsonRpcRequest(message)) {
@@ -671,6 +691,9 @@ export class PeerDaemon {
           if (message.id === state.initializeRequestId && !isJsonRpcFailure(message)) {
             state.initializeResult = validateInitializeResponse(message.result as InitializeResult);
           }
+          if (message.id === state.initializeRequestId && isJsonRpcFailure(message)) {
+            state.initializeFailed = true;
+          }
 
           if (message.id === state.pendingSessionOpenRequestId) {
             state.sessionOpened = !isJsonRpcFailure(message);
@@ -683,6 +706,10 @@ export class PeerDaemon {
         }
 
         await transport.sendFrame(serializeJson(message));
+
+        if (isJsonRpcResponse(message) && isJsonRpcFailure(message) && message.id === state.initializeRequestId && state.initializeFailed) {
+          throw new CliError("Hosted agent rejected initialize", 4, message.error);
+        }
       }
     };
 

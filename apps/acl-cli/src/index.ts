@@ -27,6 +27,11 @@ const HANDLE_PATTERN = /^[a-z0-9-]+(\.[a-z0-9-]+)*\.agent$/;
 const EXAMPLE_ECHO_AGENT_PATH = fileURLToPath(new URL("../../../examples/echo-acp-agent.mjs", import.meta.url));
 const EXAMPLE_MAILBOX_AGENT_PATH = fileURLToPath(new URL("../../../examples/mailbox-acp-agent.mjs", import.meta.url));
 const EXAMPLE_CLAUDE_AGENT_PATH = fileURLToPath(new URL("../../../examples/claude-acp-agent.mjs", import.meta.url));
+const EMPTY_DIRECTORY_CLIENT: DirectoryClient = {
+  async getAgent() {
+    return null;
+  }
+};
 
 type CommandName = "resolve" | "inspect" | "send" | "call" | "mail" | "peer" | "registry" | "manifest";
 type MailSubcommandName = "send";
@@ -743,11 +748,14 @@ function formatSearchResults(results: { results: Array<{ agentId: string; displa
     .join("\n");
 }
 
-function createLookupDirectoryClient(directoryUrl: string | undefined, directoryFixturePath: string): DirectoryClient {
+function createLookupDirectoryClient(directoryUrl: string | undefined, directoryFixturePath?: string): DirectoryClient {
   if (directoryUrl) {
     return createHttpDirectoryClient(directoryUrl);
   }
-  return new MockDirectoryClient(directoryFixturePath);
+  if (directoryFixturePath) {
+    return new MockDirectoryClient(directoryFixturePath);
+  }
+  return EMPTY_DIRECTORY_CLIENT;
 }
 
 function createRegistryClient(directoryUrl: string | undefined): DirectoryRegistryClient {
@@ -1254,7 +1262,10 @@ async function runPeerServe(args: string[], options: { json: boolean; jsonl: boo
         env: adapterEnv
       };
 
-  const daemon = new PeerDaemon(new JsonContactsStore(process.env.ACL_CONTACTS_FILE ?? join(homedir(), ".config", "acl", "contacts.json")), new MockDirectoryClient(process.env.ACL_DIRECTORY_FIXTURE ?? join(process.cwd(), "tests", "fixtures", "directory.json")));
+  const daemon = new PeerDaemon(
+    new JsonContactsStore(process.env.ACL_CONTACTS_FILE ?? join(homedir(), ".config", "acl", "contacts.json")),
+    EMPTY_DIRECTORY_CLIENT
+  );
   daemon.registerHostedAgent({
     agentId,
     serviceRoot,
@@ -1464,8 +1475,7 @@ async function main() {
   const contactsFilePath =
     process.env.ACL_CONTACTS_FILE ?? join(homedir(), ".config", "acl", "contacts.json");
   const contacts = new JsonContactsStore(contactsFilePath);
-  const directoryFixturePath =
-    process.env.ACL_DIRECTORY_FIXTURE ?? join(process.cwd(), "tests", "fixtures", "directory.json");
+  const directoryFixturePath = process.env.ACL_DIRECTORY_FIXTURE;
   const directory = createLookupDirectoryClient(directoryUrl ?? process.env.ACL_DIRECTORY_URL, directoryFixturePath);
   const daemon = new PeerDaemon(contacts, directory, {
     transport: {

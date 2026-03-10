@@ -20,6 +20,16 @@ interface DirectoryState {
   agents: AgentRecord[];
 }
 
+class DirectoryRequestError extends Error {
+  constructor(
+    public readonly statusCode: number,
+    message: string,
+    public readonly details?: unknown
+  ) {
+    super(message);
+  }
+}
+
 export interface DirectoryServerHandle {
   host: string;
   port: number;
@@ -53,7 +63,9 @@ function error(response: ServerResponse, statusCode: number, message: string, de
 function normalizeNamespace(namespace: string): string {
   const normalized = namespace.trim().toLowerCase();
   if (!NAMESPACE_PATTERN.test(normalized) || normalized.endsWith(".agent")) {
-    throw new Error("Namespace must be lowercase ASCII labels without the .agent suffix");
+    throw new DirectoryRequestError(400, "Namespace must be lowercase ASCII labels without the .agent suffix", {
+      namespace
+    });
   }
   return normalized;
 }
@@ -61,12 +73,16 @@ function normalizeNamespace(namespace: string): string {
 function normalizeAgentId(agentId: string): string {
   const normalized = agentId.trim().toLowerCase();
   if (!HANDLE_PATTERN.test(normalized)) {
-    throw new Error("agentId must be a lowercase namespaced handle ending in .agent");
+    throw new DirectoryRequestError(400, "agentId must be a lowercase namespaced handle ending in .agent", {
+      agentId
+    });
   }
 
   const labels = normalized.split(".");
   if (labels.length < 3) {
-    throw new Error("Public and unlisted registrations must be namespaced handles");
+    throw new DirectoryRequestError(400, "Public and unlisted registrations must be namespaced handles", {
+      agentId
+    });
   }
 
   return normalized;
@@ -92,7 +108,13 @@ async function parseJsonRequest<T>(request: IncomingMessage): Promise<T> {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
   const raw = Buffer.concat(chunks).toString("utf8");
-  return JSON.parse(raw) as T;
+  try {
+    return JSON.parse(raw) as T;
+  } catch (error) {
+    throw new DirectoryRequestError(400, "Request body must be valid JSON", {
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
 }
 
 async function ensureStateFile(filePath: string): Promise<void> {
@@ -138,30 +160,30 @@ function matchesSearch(record: AgentRecord, query: string): boolean {
 
 function validatePublishRequest(request: PublishAgentRequest): void {
   if (typeof request.displayName !== "string" || request.displayName.trim().length === 0) {
-    throw new Error("displayName is required");
+    throw new DirectoryRequestError(400, "displayName is required");
   }
   if (typeof request.summary !== "string" || request.summary.trim().length === 0) {
-    throw new Error("summary is required");
+    throw new DirectoryRequestError(400, "summary is required");
   }
   if (!request.protocols || !Array.isArray(request.protocols.acp) || request.protocols.acp.length === 0) {
-    throw new Error("protocols.acp is required");
+    throw new DirectoryRequestError(400, "protocols.acp is required");
   }
   if (!Array.isArray(request.endpoints) || request.endpoints.length === 0) {
-    throw new Error("at least one endpoint is required");
+    throw new DirectoryRequestError(400, "at least one endpoint is required");
   }
   for (const endpoint of request.endpoints) {
     if (endpoint.transport !== "wss" || typeof endpoint.url !== "string" || !Number.isInteger(endpoint.priority)) {
-      throw new Error("endpoints must contain valid WSS endpoint records");
+      throw new DirectoryRequestError(400, "endpoints must contain valid WSS endpoint records");
     }
   }
   if (!Array.isArray(request.serviceCapabilities)) {
-    throw new Error("serviceCapabilities must be an array");
+    throw new DirectoryRequestError(400, "serviceCapabilities must be an array");
   }
   if (request.visibility !== "public" && request.visibility !== "unlisted") {
-    throw new Error("visibility must be public or unlisted");
+    throw new DirectoryRequestError(400, "visibility must be public or unlisted");
   }
   if (typeof request.version !== "string" || request.version.trim().length === 0) {
-    throw new Error("version is required");
+    throw new DirectoryRequestError(400, "version is required");
   }
 }
 
@@ -321,6 +343,10 @@ export async function startDirectoryServer(options: StartDirectoryServerOptions)
 
       error(response, 404, "Route not found", { method: request.method, pathname });
     } catch (caught) {
+      if (caught instanceof DirectoryRequestError) {
+        error(response, caught.statusCode, caught.message, caught.details);
+        return;
+      }
       const errorObject = caught instanceof Error ? { message: caught.message } : { message: String(caught) };
       error(response, 500, "Directory server request failed", errorObject);
     }

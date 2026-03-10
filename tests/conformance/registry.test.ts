@@ -107,4 +107,27 @@ describe("ACL registry conformance", () => {
     expect(send.exitCode).toBe(0);
     expect(send.stdout.trim()).toBe("Echo: hello via registry");
   });
+
+  it("returns 400 for malformed agent identifiers instead of 500", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "acl-registry-"));
+    tempDirs.push(tempDir);
+    const stateFilePath = join(tempDir, "directory-state.json");
+
+    const server = await startDirectoryServer({
+      host: "127.0.0.1",
+      port: 0,
+      stateFilePath
+    });
+    servers.push(server);
+
+    const response = await fetch(`http://127.0.0.1:${server.port}/v1/agents/INVALID`);
+    const body = (await response.json()) as {
+      error: {
+        message: string;
+      };
+    };
+
+    expect(response.status).toBe(400);
+    expect(body.error.message).toContain("agentId");
+  });
 });

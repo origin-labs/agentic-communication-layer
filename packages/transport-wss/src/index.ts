@@ -6,6 +6,8 @@ import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { CliError, type PeerTransport } from "@acl/acl-types";
 import { derivePeerIdFromCertificatePem } from "@acl/trust";
 
+const DEFAULT_MAX_WSS_PAYLOAD_BYTES = 1_048_576;
+
 function rawCertificateToPem(rawCertificate: Buffer): string {
   const base64 = rawCertificate.toString("base64");
   const wrapped = base64.match(/.{1,64}/g)?.join("\n") ?? base64;
@@ -157,6 +159,7 @@ class WsPeerTransport implements PeerTransport {
 export interface ConnectWssOptions {
   caCertPath?: string;
   connectTimeoutMs?: number;
+  maxPayloadBytes?: number;
   pingIntervalMs?: number;
   pingDeadMs?: number;
 }
@@ -165,6 +168,8 @@ export async function connectWss(url: string, options: ConnectWssOptions = {}): 
   const ca = options.caCertPath ? await readFile(options.caCertPath, "utf8") : undefined;
   const socket = new WebSocket(url, {
     ca,
+    maxPayload: options.maxPayloadBytes ?? DEFAULT_MAX_WSS_PAYLOAD_BYTES,
+    perMessageDeflate: false,
     rejectUnauthorized: true
   });
 
@@ -211,6 +216,7 @@ export async function startWssServer(options: {
   port: number;
   certPath: string;
   keyPath: string;
+  maxPayloadBytes?: number;
   pingIntervalMs?: number;
   pingDeadMs?: number;
   onConnection(pathname: string, transport: PeerTransport): Promise<void>;
@@ -221,7 +227,11 @@ export async function startWssServer(options: {
   ]);
 
   const server = createServer({ cert, key });
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({
+    maxPayload: options.maxPayloadBytes ?? DEFAULT_MAX_WSS_PAYLOAD_BYTES,
+    noServer: true,
+    perMessageDeflate: false
+  });
 
   server.on("upgrade", (request, socket, head) => {
     const url = new URL(request.url ?? "/", `https://${request.headers.host ?? options.host}`);
