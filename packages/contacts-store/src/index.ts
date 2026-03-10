@@ -8,25 +8,45 @@ import {
   CliError
 } from "@acl/acl-types";
 
+const ALIAS_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const AGENT_ID_PATTERN = /^[a-z0-9-]+(\.[a-z0-9-]+)*\.agent$/;
+
+function isStringRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 function isEndpointRecord(value: unknown): value is ContactRecord["endpoint"] {
-  if (!value || typeof value !== "object") return false;
-  const endpoint = value as Record<string, unknown>;
-  return endpoint.transport === "wss" && typeof endpoint.url === "string" && typeof endpoint.priority === "number";
+  if (!isStringRecord(value)) return false;
+  return (
+    value.transport === "wss" &&
+    typeof value.url === "string" &&
+    Number.isInteger(value.priority) &&
+    typeof value.priority === "number" &&
+    value.priority >= 0
+  );
 }
 
 function isContactRecord(value: unknown): value is ContactRecord {
-  if (!value || typeof value !== "object") return false;
+  if (!isStringRecord(value)) return false;
   const contact = value as Record<string, unknown>;
-  if (typeof contact.agentId !== "string") return false;
-  if (contact.alias !== undefined && typeof contact.alias !== "string") return false;
+  if (typeof contact.agentId !== "string" || !AGENT_ID_PATTERN.test(contact.agentId)) return false;
+  if (contact.alias !== undefined && (typeof contact.alias !== "string" || !ALIAS_PATTERN.test(contact.alias))) {
+    return false;
+  }
   if (!isEndpointRecord(contact.endpoint)) return false;
   if (contact.pinnedPeerId !== undefined && typeof contact.pinnedPeerId !== "string") return false;
   if (contact.authRef !== undefined && typeof contact.authRef !== "string") return false;
   if (contact.verification !== undefined) {
-    if (!contact.verification || typeof contact.verification !== "object") return false;
+    if (!isStringRecord(contact.verification)) return false;
     const verification = contact.verification as Record<string, unknown>;
     if (verification.source !== "directory" && verification.source !== "manual") return false;
     if (typeof verification.verifiedAt !== "string") return false;
+    if (verification.directoryUpdatedAt !== undefined && typeof verification.directoryUpdatedAt !== "string") {
+      return false;
+    }
+    if (verification.endpointVerifiedAt !== undefined && typeof verification.endpointVerifiedAt !== "string") {
+      return false;
+    }
   }
   return true;
 }
@@ -42,6 +62,24 @@ function validateContactsFile(value: unknown): ContactsFile {
   if (!Array.isArray(file.contacts) || !file.contacts.every(isContactRecord)) {
     throw new CliError("Contacts file contacts are invalid", 1);
   }
+
+  const aliases = new Set<string>();
+  const agentIds = new Set<string>();
+
+  for (const contact of file.contacts as ContactRecord[]) {
+    if (contact.alias) {
+      if (aliases.has(contact.alias)) {
+        throw new CliError("Contacts file aliases must be unique", 1, { alias: contact.alias });
+      }
+      aliases.add(contact.alias);
+    }
+
+    if (agentIds.has(contact.agentId)) {
+      throw new CliError("Contacts file agentIds must be unique", 1, { agentId: contact.agentId });
+    }
+    agentIds.add(contact.agentId);
+  }
+
   return file as unknown as ContactsFile;
 }
 

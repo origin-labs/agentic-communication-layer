@@ -33,6 +33,7 @@ export interface CliRunResult {
 
 export interface HarnessOptions {
   visibility?: Visibility;
+  authRequired?: boolean;
 }
 
 export async function createHarness(options: HarnessOptions = {}): Promise<TestHarness> {
@@ -55,7 +56,12 @@ export async function createHarness(options: HarnessOptions = {}): Promise<TestH
     serviceRoot: "/srv/fixture-agent",
     adapter: {
       command: process.execPath,
-      args: [fixtureAgentPath]
+      args: [fixtureAgentPath],
+      env: options.authRequired
+        ? {
+            ACL_FIXTURE_AUTH_REQUIRED: "1"
+          }
+        : undefined
     }
   });
 

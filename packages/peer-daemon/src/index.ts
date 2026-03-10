@@ -134,6 +134,22 @@ function getSessionIdFromPermissionRequest(params: unknown): string | null {
   return params.sessionId;
 }
 
+function isAuthRequiredError(error: { message: string; data?: unknown }): boolean {
+  if (error.message === "auth_required") {
+    return true;
+  }
+
+  if (!isObjectRecord(error.data)) {
+    return false;
+  }
+
+  return (
+    error.data.type === "auth_required" ||
+    error.data.reason === "auth_required" ||
+    error.data.error === "auth_required"
+  );
+}
+
 async function sendJsonRpcError(
   transport: PeerTransport,
   id: JsonRpcId,
@@ -457,6 +473,9 @@ export class PeerDaemon {
         throw new CliError("Expected JSON-RPC response to session/new", 6, sessionMessage);
       }
       if (isJsonRpcFailure(sessionMessage)) {
+        if (isAuthRequiredError(sessionMessage.error)) {
+          throw new CliError("Remote agent requires authentication", 5, sessionMessage.error);
+        }
         throw new CliError(sessionMessage.error.message, 6, sessionMessage.error);
       }
 
@@ -482,7 +501,8 @@ export class PeerDaemon {
         initialize: session.initialize,
         sessionId: session.sessionId,
         promptResult: execution.promptResult,
-        aggregatedText: execution.aggregatedText
+        aggregatedText: execution.aggregatedText,
+        locallyCancelled: execution.locallyCancelled
       };
     } finally {
       await session.close().catch(() => undefined);

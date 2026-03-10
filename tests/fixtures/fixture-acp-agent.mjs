@@ -12,6 +12,8 @@ let sessionId = null;
 let activePrompt = null;
 let nextPermissionRequestId = 10_000;
 const pendingPermissionRequests = new Map();
+const authRequired = process.env.ACL_FIXTURE_AUTH_REQUIRED === "1";
+let authenticated = !authRequired;
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -191,13 +193,66 @@ async function handleMessage(line) {
           title: "Fixture ACP Agent",
           version: "0.2.0"
         },
-        authMethods: []
+        authMethods: authRequired
+          ? [
+              {
+                id: "fixture-auth",
+                name: "Fixture Auth"
+              }
+            ]
+          : []
       }
     });
     return;
   }
 
+  if (message.method === "authenticate") {
+    if (!authRequired) {
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        error: {
+          code: -32602,
+          message: "authenticate_not_supported"
+        }
+      });
+      return;
+    }
+
+    if (message.params?.methodId !== "fixture-auth") {
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        error: {
+          code: -32602,
+          message: "invalid_auth_method"
+        }
+      });
+      return;
+    }
+
+    authenticated = true;
+    send({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: {}
+    });
+    return;
+  }
+
   if (message.method === "session/new") {
+    if (!authenticated) {
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        error: {
+          code: -32001,
+          message: "auth_required"
+        }
+      });
+      return;
+    }
+
     sessionId = `sess_${randomUUID().replaceAll("-", "")}`;
     send({
       jsonrpc: "2.0",

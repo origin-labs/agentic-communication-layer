@@ -267,6 +267,9 @@ async function main() {
             aggregatedText: result.aggregatedText,
             locallyCancelled: result.locallyCancelled
           });
+          if (result.locallyCancelled) {
+            process.exitCode = 7;
+          }
         } finally {
           await session.close().catch(() => undefined);
         }
@@ -275,6 +278,9 @@ async function main() {
 
       const result = await daemon.send(target, buildTextPrompt(promptText));
       console.log(json ? JSON.stringify(result, null, 2) : formatSendResult(result));
+      if (result.locallyCancelled) {
+        process.exitCode = 7;
+      }
       return;
     }
     case "call": {

@@ -79,6 +79,7 @@ export interface SendResult {
   sessionId: string;
   promptResult: PromptResult;
   aggregatedText: string;
+  locallyCancelled: boolean;
 }
 
 export type JsonRpcId = string | number | null;

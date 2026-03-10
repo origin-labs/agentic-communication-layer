@@ -29,12 +29,34 @@ class WsPeerTransport implements PeerTransport {
   private readonly waiters: Array<{ resolve(value: string): void; reject(error: Error): void }> = [];
   private sendChain = Promise.resolve();
   private terminalError: Error | null = null;
+  private readonly heartbeatTimer: NodeJS.Timeout;
+  private lastSeenAt = Date.now();
 
   constructor(
     private readonly socket: WebSocket,
-    public readonly peerId: string
+    public readonly peerId: string,
+    heartbeat: {
+      pingIntervalMs: number;
+      pingDeadMs: number;
+    }
   ) {
+    this.heartbeatTimer = setInterval(() => {
+      if (this.socket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+
+      if (Date.now() - this.lastSeenAt >= heartbeat.pingDeadMs) {
+        this.fail(new CliError("WSS transport heartbeat timed out", 3));
+        this.socket.terminate();
+        return;
+      }
+
+      this.socket.ping();
+    }, heartbeat.pingIntervalMs);
+    this.heartbeatTimer.unref?.();
+
     this.socket.on("message", (data: RawData, isBinary: boolean) => {
+      this.lastSeenAt = Date.now();
       if (isBinary) {
         this.fail(new CliError("WSS transport only accepts UTF-8 text frames", 3));
         this.socket.close(1003, "Text frames only");
@@ -50,11 +72,21 @@ class WsPeerTransport implements PeerTransport {
       }
     });
 
+    this.socket.on("ping", () => {
+      this.lastSeenAt = Date.now();
+    });
+
+    this.socket.on("pong", () => {
+      this.lastSeenAt = Date.now();
+    });
+
     this.socket.on("close", () => {
+      clearInterval(this.heartbeatTimer);
       this.fail(new CliError("WSS transport closed", 3));
     });
 
     this.socket.on("error", (error: Error) => {
+      clearInterval(this.heartbeatTimer);
       this.fail(new CliError("WSS transport error", 3, error));
     });
   }
@@ -125,6 +157,8 @@ class WsPeerTransport implements PeerTransport {
 export interface ConnectWssOptions {
   caCertPath?: string;
   connectTimeoutMs?: number;
+  pingIntervalMs?: number;
+  pingDeadMs?: number;
 }
 
 export async function connectWss(url: string, options: ConnectWssOptions = {}): Promise<PeerTransport> {
@@ -161,7 +195,10 @@ export async function connectWss(url: string, options: ConnectWssOptions = {}): 
     throw new CliError("TLS peer certificate not available", 3);
   }
 
-  return new WsPeerTransport(socket, peerId);
+  return new WsPeerTransport(socket, peerId, {
+    pingIntervalMs: options.pingIntervalMs ?? 30_000,
+    pingDeadMs: options.pingDeadMs ?? 90_000
+  });
 }
 
 export interface WssServerHandle {
@@ -174,6 +211,8 @@ export async function startWssServer(options: {
   port: number;
   certPath: string;
   keyPath: string;
+  pingIntervalMs?: number;
+  pingDeadMs?: number;
   onConnection(pathname: string, transport: PeerTransport): Promise<void>;
 }): Promise<WssServerHandle> {
   const [cert, key] = await Promise.all([
@@ -189,7 +228,10 @@ export async function startWssServer(options: {
     wss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
       const tlsSocket = (ws as WebSocketWithTlsSocket)._socket;
       const peerId = derivePeerIdFromTlsSocket(tlsSocket) ?? "peer_spki_sha256_unknown";
-      const transport = new WsPeerTransport(ws, peerId);
+      const transport = new WsPeerTransport(ws, peerId, {
+        pingIntervalMs: options.pingIntervalMs ?? 30_000,
+        pingDeadMs: options.pingDeadMs ?? 90_000
+      });
       void options.onConnection(url.pathname, transport).catch(async () => {
         await transport.close().catch(() => undefined);
       });

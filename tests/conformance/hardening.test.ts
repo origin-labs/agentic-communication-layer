@@ -113,8 +113,16 @@ describe("ACL hardening conformance", () => {
     const harness = await withHarness();
     const result = await runCli(["send", "acme.reviewer.agent", "[permission-cancel] request"], harness.env);
 
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode).toBe(7);
     expect(result.stdout.trim()).toContain("[cancel acknowledged]");
+  });
+
+  it("maps auth_required session failures to authentication exit codes", async () => {
+    const harness = await withHarness({ authRequired: true });
+    const result = await runCli(["send", "acme.reviewer.agent", "needs auth"], harness.env);
+
+    expect(result.exitCode).toBe(5);
+    expect(result.stderr).toContain("Remote agent requires authentication");
   });
 
   it("emits JSONL events for send", async () => {
