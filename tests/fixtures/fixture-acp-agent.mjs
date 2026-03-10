@@ -9,7 +9,9 @@ const rl = readline.createInterface({
 });
 
 let sessionId = null;
-let activePromptRequestId = null;
+let activePrompt = null;
+let nextPermissionRequestId = 10_000;
+const pendingPermissionRequests = new Map();
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -49,12 +51,125 @@ function textFromPrompt(prompt) {
     .join("\n");
 }
 
+function finishPrompt(stopReason) {
+  if (!activePrompt) {
+    return;
+  }
+
+  if (activePrompt.timer) {
+    clearTimeout(activePrompt.timer);
+  }
+
+  send({
+    jsonrpc: "2.0",
+    id: activePrompt.requestId,
+    result: {
+      stopReason
+    }
+  });
+
+  activePrompt = null;
+}
+
+function startHoldPrompt(promptRequestId, currentSessionId, promptText) {
+  activePrompt = {
+    requestId: promptRequestId,
+    sessionId: currentSessionId,
+    mode: "hold",
+    promptText,
+    timer: null
+  };
+
+  send({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: currentSessionId,
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: {
+          type: "text",
+          text: `Working on: ${promptText}`
+        }
+      }
+    }
+  });
+
+  activePrompt.timer = setTimeout(() => {
+    if (!activePrompt || activePrompt.requestId !== promptRequestId) {
+      return;
+    }
+
+    send({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: currentSessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: {
+            type: "text",
+            text: " complete"
+          }
+        }
+      }
+    });
+
+    finishPrompt("end_turn");
+  }, 1500);
+}
+
 async function handleMessage(line) {
   if (!line.trim()) {
     return;
   }
 
   const message = JSON.parse(line);
+
+  if (Object.prototype.hasOwnProperty.call(message, "id") && Object.prototype.hasOwnProperty.call(message, "result")) {
+    const pendingPermission = pendingPermissionRequests.get(message.id);
+    if (!pendingPermission) {
+      return;
+    }
+
+    pendingPermissionRequests.delete(message.id);
+    const outcome = message.result?.outcome;
+    if (outcome?.outcome === "cancelled") {
+      send({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: pendingPermission.sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: {
+              type: "text",
+              text: "Permission request cancelled"
+            }
+          }
+        }
+      });
+      finishPrompt("cancelled");
+      return;
+    }
+
+    send({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: pendingPermission.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: {
+            type: "text",
+            text: "Permission rejected"
+          }
+        }
+      }
+    });
+    finishPrompt("end_turn");
+    return;
+  }
 
   if (message.method === "initialize") {
     send({
@@ -74,7 +189,7 @@ async function handleMessage(line) {
         agentInfo: {
           name: "fixture-acp-agent",
           title: "Fixture ACP Agent",
-          version: "0.1.0"
+          version: "0.2.0"
         },
         authMethods: []
       }
@@ -95,15 +210,56 @@ async function handleMessage(line) {
   }
 
   if (message.method === "session/prompt") {
-    activePromptRequestId = message.id;
     const promptText = textFromPrompt(message.params?.prompt);
+
+    if (promptText.startsWith("[hold]")) {
+      startHoldPrompt(message.id, message.params?.sessionId ?? sessionId, promptText);
+      return;
+    }
+
+    activePrompt = {
+      requestId: message.id,
+      sessionId: message.params?.sessionId ?? sessionId,
+      mode: "normal",
+      promptText,
+      timer: null
+    };
+
+    if (promptText.startsWith("[permission]")) {
+      const permissionRequestId = nextPermissionRequestId++;
+      pendingPermissionRequests.set(permissionRequestId, {
+        sessionId: activePrompt.sessionId,
+        promptRequestId: activePrompt.requestId
+      });
+
+      send({
+        jsonrpc: "2.0",
+        id: permissionRequestId,
+        method: "session/request_permission",
+        params: {
+          sessionId: activePrompt.sessionId,
+          toolCall: {
+            toolCallId: "tool_permission_fixture"
+          },
+          options: [
+            {
+              optionId: "reject-once",
+              name: "Reject",
+              kind: "reject_once"
+            }
+          ]
+        }
+      });
+      return;
+    }
+
     const responseText = promptText ? `Echo: ${promptText}` : "Echo:";
 
     send({
       jsonrpc: "2.0",
       method: "session/update",
       params: {
-        sessionId: message.params?.sessionId ?? sessionId,
+        sessionId: activePrompt.sessionId,
         update: {
           sessionUpdate: "agent_message_chunk",
           content: {
@@ -114,28 +270,27 @@ async function handleMessage(line) {
       }
     });
 
-    send({
-      jsonrpc: "2.0",
-      id: message.id,
-      result: {
-        stopReason: "end_turn"
-      }
-    });
-
-    activePromptRequestId = null;
+    finishPrompt("end_turn");
     return;
   }
 
   if (message.method === "session/cancel") {
-    if (activePromptRequestId !== null) {
+    if (activePrompt) {
       send({
         jsonrpc: "2.0",
-        id: activePromptRequestId,
-        result: {
-          stopReason: "cancelled"
+        method: "session/update",
+        params: {
+          sessionId: activePrompt.sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: {
+              type: "text",
+              text: " [cancel acknowledged]"
+            }
+          }
         }
       });
-      activePromptRequestId = null;
+      finishPrompt("cancelled");
     }
     return;
   }
