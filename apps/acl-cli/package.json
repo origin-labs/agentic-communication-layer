@@ -15,6 +15,8 @@
     "@acl/acl-types": "workspace:*",
     "@acl/cli-output": "workspace:*",
     "@acl/contacts-store": "workspace:*",
+    "@acl/directory-client": "workspace:*",
+    "@acl/directory-server": "workspace:*",
     "@acl/directory-mock": "workspace:*",
     "@acl/peer-daemon": "workspace:*"
   }

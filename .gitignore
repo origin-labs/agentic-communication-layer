@@ -7,3 +7,4 @@ tmp/
 .dev/
 .env
 .pnpm-store/
+/acl

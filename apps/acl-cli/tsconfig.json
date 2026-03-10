@@ -9,6 +9,8 @@
     { "path": "../../packages/acl-types" },
     { "path": "../../packages/cli-output" },
     { "path": "../../packages/contacts-store" },
+    { "path": "../../packages/directory-client" },
+    { "path": "../../packages/directory-server" },
     { "path": "../../packages/directory-mock" },
     { "path": "../../packages/peer-daemon" }
   ],

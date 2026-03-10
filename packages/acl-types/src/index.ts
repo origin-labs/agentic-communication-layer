@@ -1,4 +1,6 @@
 export type Visibility = "public" | "unlisted";
+export type NamespaceStatus = "pending" | "verified";
+export type VerificationMethod = "dns_txt";
 
 export interface EndpointRecord {
   transport: "wss";
@@ -19,6 +21,47 @@ export interface AgentRecord {
   visibility: Visibility;
   version: string;
   updatedAt: string;
+}
+
+export interface NamespaceChallenge {
+  type: "dns_txt";
+  name: string;
+  value: string;
+}
+
+export interface NamespaceRecord {
+  namespace: string;
+  status: NamespaceStatus;
+  verificationMethod: VerificationMethod;
+  createdAt: string;
+  verifiedAt?: string;
+  challenge?: NamespaceChallenge;
+}
+
+export interface ClaimNamespaceRequest {
+  namespace: string;
+  verificationMethod: VerificationMethod;
+}
+
+export interface VerifyNamespaceRequest {
+  proof: string;
+}
+
+export interface PublishAgentRequest {
+  displayName: string;
+  summary: string;
+  protocols: {
+    acp: number[];
+  };
+  endpoints: EndpointRecord[];
+  serviceCapabilities: string[];
+  visibility: Visibility;
+  version: string;
+}
+
+export interface SearchAgentsResult {
+  results: AgentRecord[];
+  nextCursor: string | null;
 }
 
 export interface VerificationMetadata {
@@ -52,6 +95,14 @@ export interface ResolvedTarget {
 
 export interface DirectoryClient {
   getAgent(agentId: string): Promise<AgentRecord | null>;
+}
+
+export interface DirectoryRegistryClient extends DirectoryClient {
+  getNamespace(namespace: string): Promise<NamespaceRecord | null>;
+  claimNamespace(request: ClaimNamespaceRequest): Promise<NamespaceRecord>;
+  verifyNamespace(namespace: string, request: VerifyNamespaceRequest): Promise<NamespaceRecord>;
+  putAgent(agentId: string, request: PublishAgentRequest): Promise<AgentRecord>;
+  search(query: string, limit?: number, cursor?: string): Promise<SearchAgentsResult>;
 }
 
 export interface ContactsStore {

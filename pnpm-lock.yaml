@@ -38,9 +38,15 @@ importers:
       '@acl/contacts-store':
         specifier: workspace:*
         version: link:../../packages/contacts-store
+      '@acl/directory-client':
+        specifier: workspace:*
+        version: link:../../packages/directory-client
       '@acl/directory-mock':
         specifier: workspace:*
         version: link:../../packages/directory-mock
+      '@acl/directory-server':
+        specifier: workspace:*
+        version: link:../../packages/directory-server
       '@acl/peer-daemon':
         specifier: workspace:*
         version: link:../../packages/peer-daemon
@@ -78,6 +84,12 @@ importers:
         version: link:../acl-types
 
   packages/directory-mock:
+    dependencies:
+      '@acl/acl-types':
+        specifier: workspace:*
+        version: link:../acl-types
+
+  packages/directory-server:
     dependencies:
       '@acl/acl-types':
         specifier: workspace:*

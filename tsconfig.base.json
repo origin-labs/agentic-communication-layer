@@ -20,6 +20,7 @@
       "@acl/cli-output": ["packages/cli-output/src/index.ts"],
       "@acl/contacts-store": ["packages/contacts-store/src/index.ts"],
       "@acl/directory-client": ["packages/directory-client/src/index.ts"],
+      "@acl/directory-server": ["packages/directory-server/src/index.ts"],
       "@acl/directory-mock": ["packages/directory-mock/src/index.ts"],
       "@acl/peer-daemon": ["packages/peer-daemon/src/index.ts"],
       "@acl/transport-wss": ["packages/transport-wss/src/index.ts"],

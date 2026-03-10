@@ -8,6 +8,7 @@
     { "path": "./packages/cli-output" },
     { "path": "./packages/contacts-store" },
     { "path": "./packages/directory-client" },
+    { "path": "./packages/directory-server" },
     { "path": "./packages/directory-mock" },
     { "path": "./packages/trust" },
     { "path": "./packages/transport-wss" },
